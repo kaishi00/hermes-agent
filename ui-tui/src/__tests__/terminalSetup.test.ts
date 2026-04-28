@@ -116,6 +116,33 @@ describe('configureTerminalKeybindings', () => {
     expect(copyFile).not.toHaveBeenCalled() // no backup when not writing
   })
 
+  it('does not flag a disjoint-when binding on the same key as a conflict', async () => {
+    // VS Code allows multiple bindings for the same key when their `when`
+    // clauses don't overlap. A user's pre-existing cmd+c binding scoped to
+    // editor focus should NOT block our terminal-scoped cmd+c binding.
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const readFile = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        {
+          key: 'cmd+c',
+          command: 'editor.action.clipboardCopyAction',
+          when: 'editorFocus'
+        }
+      ])
+    )
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const copyFile = vi.fn().mockResolvedValue(undefined)
+
+    const result = await configureTerminalKeybindings('vscode', {
+      fileOps: { copyFile, mkdir, readFile, writeFile },
+      homeDir: '/Users/me',
+      platform: 'darwin'
+    })
+
+    expect(result.success).toBe(true)
+    expect(writeFile).toHaveBeenCalledTimes(1)
+  })
+
   it('backs up existing keybindings.json only when writing changes', async () => {
     const mkdir = vi.fn().mockResolvedValue(undefined)
     const readFile = vi.fn().mockResolvedValue(JSON.stringify([]))

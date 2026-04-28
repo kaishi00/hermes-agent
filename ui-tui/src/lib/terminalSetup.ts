@@ -179,6 +179,23 @@ function sameBinding(a: Keybinding, b: Keybinding): boolean {
   return a.key === b.key && a.command === b.command && a.when === b.when && a.args?.text === b.args?.text
 }
 
+// VS Code allows multiple bindings on the same key as long as their `when`
+// clauses don't overlap (e.g. one for `terminalFocus && terminalTextSelected`
+// and another for `editorFocus`). We only flag a real conflict when an
+// existing binding targets the same key AND the same `when` context as
+// ours but has different command/args. Disjoint `when` clauses coexist.
+function bindingsConflict(existing: Keybinding, target: Keybinding): boolean {
+  if (existing.key !== target.key) {
+    return false
+  }
+
+  if ((existing.when ?? '') !== (target.when ?? '')) {
+    return false
+  }
+
+  return !sameBinding(existing, target)
+}
+
 async function backupFile(filePath: string, ops: FileOps): Promise<void> {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   await ops.copyFile(filePath, `${filePath}.backup.${stamp}`)
@@ -248,9 +265,7 @@ export async function configureTerminalKeybindings(
     }
 
     const conflicts = TARGET_BINDINGS.filter(target =>
-      keybindings.some(
-        existing => isKeybinding(existing) && existing.key === target.key && !sameBinding(existing, target)
-      )
+      keybindings.some(existing => isKeybinding(existing) && bindingsConflict(existing, target))
     )
 
     if (conflicts.length) {

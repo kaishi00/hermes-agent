@@ -214,7 +214,6 @@ export default class Ink {
   // so UI (e.g. footer hints) can react to selection appearing/clearing.
   private readonly selectionListeners = new Set<() => void>()
   private selectionVersion = 0
-  private selectionWasActive = false
   // DOM nodes currently under the pointer (mode-1003 motion). Held here
   // so App.tsx's handleMouseEvent is stateless — dispatchHover diffs
   // against this set and mutates it in place.
@@ -1668,7 +1667,10 @@ export default class Ink {
 
   /**
    * Subscribe to selection state changes. Fires whenever the selection
-   * is started, updated, cleared, or copied. Returns an unsubscribe fn.
+   * mutates — anchor/focus moves, drag updates, programmatic clears.
+   * Does NOT fire on `copySelectionNoClear()` (no mutation, no notify),
+   * which is why version-based subscribers don't risk re-entrant copies.
+   * Returns an unsubscribe fn.
    */
   subscribeToSelectionChange(cb: () => void): () => void {
     this.selectionListeners.add(cb)
@@ -1679,7 +1681,6 @@ export default class Ink {
     this.scheduleRender()
 
     this.selectionVersion += 1
-    this.selectionWasActive = hasSelection(this.selection)
 
     for (const cb of this.selectionListeners) {
       cb()
