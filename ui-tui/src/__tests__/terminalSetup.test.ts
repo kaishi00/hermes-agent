@@ -79,6 +79,9 @@ describe('configureTerminalKeybindings', () => {
     expect(writeFile).toHaveBeenCalledTimes(1)
     expect(copyFile).not.toHaveBeenCalled() // no existing file to back up
     const written = writeFile.mock.calls[0]?.[1] as string
+    expect(written).toContain('cmd+c')
+    expect(written).toContain('terminalTextSelected')
+    expect(written).toContain('\\u001b[99;13u')
     expect(written).toContain('shift+enter')
     expect(written).toContain('cmd+enter')
     expect(written).toContain('cmd+z')
@@ -186,6 +189,12 @@ describe('configureTerminalKeybindings', () => {
 
     const readComplete = vi.fn().mockResolvedValue(
       JSON.stringify([
+        {
+          key: 'cmd+c',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus && terminalTextSelected',
+          args: { text: '\u001b[99;13u' }
+        },
         {
           key: 'shift+enter',
           command: 'workbench.action.terminal.sendSequence',

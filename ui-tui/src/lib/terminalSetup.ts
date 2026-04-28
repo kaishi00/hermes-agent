@@ -25,6 +25,7 @@ export type TerminalSetupResult = {
 }
 
 const DEFAULT_FILE_OPS: FileOps = { copyFile, mkdir, readFile, writeFile }
+const COPY_SEQUENCE = '\u001b[99;13u'
 const MULTILINE_SEQUENCE = '\\\r\n'
 
 const TERMINAL_META: Record<SupportedTerminal, { appName: string; label: string }> = {
@@ -34,6 +35,12 @@ const TERMINAL_META: Record<SupportedTerminal, { appName: string; label: string 
 }
 
 const TARGET_BINDINGS: Keybinding[] = [
+  {
+    key: 'cmd+c',
+    command: 'workbench.action.terminal.sendSequence',
+    when: 'terminalFocus && terminalTextSelected',
+    args: { text: COPY_SEQUENCE }
+  },
   {
     key: 'shift+enter',
     command: 'workbench.action.terminal.sendSequence',
