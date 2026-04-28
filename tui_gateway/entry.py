@@ -90,10 +90,12 @@ def _log_signal(signum: int, frame) -> None:
     try:
         sys.exit(0)
     except SystemExit:
-        # Re-raise on the main thread so atexit + finalisers run inside
-        # the grace window.  When we're called from a background thread,
-        # ``sys.exit`` only raises in the caller; the timer above is the
-        # safety net.
+        # Re-raise so the main-thread interpreter unwinds and runs
+        # atexit + finalisers inside the grace window.  Python signal
+        # handlers always run on the main thread, but a worker thread
+        # holding ``_stdout_lock`` mid-flush can keep that unwind
+        # waiting indefinitely; the daemon timer above is the safety
+        # net for that exact case.
         raise
 
 

@@ -122,17 +122,19 @@ def test_write_json_no_flush_env_skips_flush(server, monkeypatch):
         def write(self, line): written.append(line)
         def flush(self): flushed["count"] += 1
 
-    stream = _Stream()
-    transport = transport_mod.StdioTransport(lambda: stream, threading.Lock())
+    try:
+        stream = _Stream()
+        transport = transport_mod.StdioTransport(lambda: stream, threading.Lock())
 
-    assert transport.write({"x": 1}) is True
-    assert flushed["count"] == 0
-    assert written and json.loads(written[0]) == {"x": 1}
-
-    # Restore module state for sibling tests.
-    monkeypatch.delenv("HERMES_TUI_GATEWAY_NO_FLUSH", raising=False)
-    importlib.reload(transport_mod)
-    importlib.reload(server_mod)
+        assert transport.write({"x": 1}) is True
+        assert flushed["count"] == 0
+        assert written and json.loads(written[0]) == {"x": 1}
+    finally:
+        # Always restore module-level _DISABLE_FLUSH so an assertion
+        # failure above doesn't leak state into sibling tests.
+        monkeypatch.delenv("HERMES_TUI_GATEWAY_NO_FLUSH", raising=False)
+        importlib.reload(transport_mod)
+        importlib.reload(server_mod)
 
 
 # ── _emit ────────────────────────────────────────────────────────────

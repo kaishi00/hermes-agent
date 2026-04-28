@@ -34,11 +34,14 @@ logger = logging.getLogger(__name__)
 # Optional knob: when true, StdioTransport does not call ``stream.flush``
 # after writing.  Use this on environments where a half-closed pipe (TUI
 # Node parent quit while the gateway is still emitting events) makes
-# flush block long enough to starve the rest of the worker pool.  Python's
-# stdout is line-buffered when attached to a tty and write-through when
-# attached to a pipe (the TUI case), so dropping the explicit flush is
-# safe on POSIX — the kernel writev still flushes on newline.  Default
-# stays off so existing behaviour is unchanged.
+# flush block long enough to starve the rest of the worker pool.
+#
+# IMPORTANT: Python text stdout is fully buffered when attached to a
+# pipe (the TUI case), so this knob ONLY makes sense when the gateway
+# is launched with ``-u`` or ``PYTHONUNBUFFERED=1``.  Without one of
+# those, JSON-RPC frames will accumulate in the buffer and the TUI
+# will hang waiting for ``gateway.ready``.  Default stays off so the
+# existing flush-after-write behaviour is unchanged.
 _DISABLE_FLUSH = (os.environ.get("HERMES_TUI_GATEWAY_NO_FLUSH", "") or "").strip().lower() in {
     "1",
     "true",
@@ -96,10 +99,13 @@ class StdioTransport:
         self._lock = lock
 
     def write(self, obj: dict) -> bool:
-        line = json.dumps(obj, ensure_ascii=False) + "\n"
-        # Serialize JSON into bytes outside the lock so that work doesn't
-        # block other threads waiting to emit their own frames.
         try:
+            # Serialize JSON inside the outer try so non-JSON-safe
+            # objects surface as "peer gone" instead of bubbling up
+            # into the dispatcher loop.  Kept OUTSIDE the lock so a
+            # large message can't block other threads waiting to emit
+            # their own frames.
+            line = json.dumps(obj, ensure_ascii=False) + "\n"
             with self._lock:
                 stream = self._stream_getter()
                 try:
@@ -111,12 +117,13 @@ class StdioTransport:
                     logger.debug("StdioTransport write failed: %s", e)
                     return False
 
-                # A separate try/except so a flush that hangs on a
-                # half-closed pipe doesn't take the lock with it.  Any
-                # OSError here is treated as "peer is gone" — the next
-                # write returns False and callers exit cleanly.  Kept
-                # under the same lock so a buffered partial write can't
-                # interleave with another thread's frame.
+                # Separate try/except: any flush exception is reported
+                # as peer-gone instead of bubbling up.  Note this only
+                # protects against EXCEPTIONS — a flush that *hangs*
+                # on a half-closed pipe will still hold the lock until
+                # it returns.  See ``_DISABLE_FLUSH`` for the
+                # "skip flush entirely" escape hatch when you cannot
+                # afford the lock-starvation risk.
                 if not _DISABLE_FLUSH:
                     try:
                         stream.flush()
@@ -128,9 +135,9 @@ class StdioTransport:
 
             return True
         except Exception as e:
-            # Unexpected serialization or lock acquisition failure — log
-            # and signal the peer as gone instead of bubbling up into the
-            # dispatcher's main loop.
+            # Unexpected serialization (TypeError on non-JSON-safe
+            # value) or lock acquisition failure — log and signal the
+            # peer as gone instead of letting the dispatcher unwind.
             logger.debug("StdioTransport write unexpected error: %s", e)
             return False
 
