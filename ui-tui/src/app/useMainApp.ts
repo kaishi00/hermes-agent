@@ -1,6 +1,6 @@
 import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { FULL_RENDER_TAIL_ITEMS, MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
@@ -143,10 +143,29 @@ export function useMainApp(gw: GatewayClient) {
 
   const hasSelection = useHasSelection()
   const selection = useSelection()
+  const selectionVersion = useSyncExternalStore(selection.subscribe, selection.version)
 
   useEffect(() => {
     selection.setSelectionBgColor(ui.theme.color.selectionBg)
   }, [selection, ui.theme.color.selectionBg])
+
+  // macOS Terminal.app does not forward Cmd+C to fullscreen TUIs that enable
+  // mouse tracking, so the only reliable native-feeling path is iTerm-style
+  // copy-on-select: once a drag creates a stable TUI selection, write it to
+  // the system clipboard while keeping the highlight visible.
+  useEffect(() => {
+    if (!hasSelection) {
+      return
+    }
+
+    const state = selection.getState() as { isDragging?: boolean } | null
+
+    if (state?.isDragging) {
+      return
+    }
+
+    void selection.copySelectionNoClear()
+  }, [hasSelection, selection, selectionVersion])
 
   const clearSelection = useCallback(() => {
     selection.clearSelection()

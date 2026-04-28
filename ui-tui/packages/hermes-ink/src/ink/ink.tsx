@@ -213,6 +213,7 @@ export default class Ink {
   // Fired alongside the terminal repaint whenever the selection mutates
   // so UI (e.g. footer hints) can react to selection appearing/clearing.
   private readonly selectionListeners = new Set<() => void>()
+  private selectionVersion = 0
   private selectionWasActive = false
   // DOM nodes currently under the pointer (mode-1003 motion). Held here
   // so App.tsx's handleMouseEvent is stateless — dispatchHover diffs
@@ -1661,6 +1662,10 @@ export default class Ink {
     return hasSelection(this.selection)
   }
 
+  getSelectionVersion(): number {
+    return this.selectionVersion
+  }
+
   /**
    * Subscribe to selection state changes. Fires whenever the selection
    * is started, updated, cleared, or copied. Returns an unsubscribe fn.
@@ -1673,14 +1678,11 @@ export default class Ink {
   private notifySelectionChange(): void {
     this.scheduleRender()
 
-    const active = hasSelection(this.selection)
+    this.selectionVersion += 1
+    this.selectionWasActive = hasSelection(this.selection)
 
-    if (active !== this.selectionWasActive) {
-      this.selectionWasActive = active
-
-      for (const cb of this.selectionListeners) {
-        cb()
-      }
+    for (const cb of this.selectionListeners) {
+      cb()
     }
   }
 
