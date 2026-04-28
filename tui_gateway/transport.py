@@ -24,8 +24,27 @@ from __future__ import annotations
 
 import contextvars
 import json
+import logging
+import os
 import threading
 from typing import Any, Callable, Optional, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
+
+# Optional knob: when true, StdioTransport does not call ``stream.flush``
+# after writing.  Use this on environments where a half-closed pipe (TUI
+# Node parent quit while the gateway is still emitting events) makes
+# flush block long enough to starve the rest of the worker pool.  Python's
+# stdout is line-buffered when attached to a tty and write-through when
+# attached to a pipe (the TUI case), so dropping the explicit flush is
+# safe on POSIX — the kernel writev still flushes on newline.  Default
+# stays off so existing behaviour is unchanged.
+_DISABLE_FLUSH = (os.environ.get("HERMES_TUI_GATEWAY_NO_FLUSH", "") or "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 @runtime_checkable
@@ -78,13 +97,41 @@ class StdioTransport:
 
     def write(self, obj: dict) -> bool:
         line = json.dumps(obj, ensure_ascii=False) + "\n"
+        # Serialize JSON into bytes outside the lock so that work doesn't
+        # block other threads waiting to emit their own frames.
         try:
             with self._lock:
                 stream = self._stream_getter()
-                stream.write(line)
-                stream.flush()
+                try:
+                    stream.write(line)
+                except (BrokenPipeError, ValueError):
+                    # ValueError: I/O operation on closed file.
+                    return False
+                except OSError as e:
+                    logger.debug("StdioTransport write failed: %s", e)
+                    return False
+
+                # A separate try/except so a flush that hangs on a
+                # half-closed pipe doesn't take the lock with it.  Any
+                # OSError here is treated as "peer is gone" — the next
+                # write returns False and callers exit cleanly.  Kept
+                # under the same lock so a buffered partial write can't
+                # interleave with another thread's frame.
+                if not _DISABLE_FLUSH:
+                    try:
+                        stream.flush()
+                    except (BrokenPipeError, ValueError):
+                        return False
+                    except OSError as e:
+                        logger.debug("StdioTransport flush failed: %s", e)
+                        return False
+
             return True
-        except BrokenPipeError:
+        except Exception as e:
+            # Unexpected serialization or lock acquisition failure — log
+            # and signal the peer as gone instead of bubbling up into the
+            # dispatcher's main loop.
+            logger.debug("StdioTransport write unexpected error: %s", e)
             return False
 
     def close(self) -> None:

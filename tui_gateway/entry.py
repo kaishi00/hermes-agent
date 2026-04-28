@@ -29,6 +29,9 @@ def _install_sidecar_publisher() -> None:
     )
 
 
+_SHUTDOWN_GRACE_S = 1.0
+
+
 def _log_signal(signum: int, frame) -> None:
     """Capture WHICH thread and WHERE a termination signal hit us.
 
@@ -38,6 +41,13 @@ def _log_signal(signum: int, frame) -> None:
     handler the gateway-exited banner in the TUI has no trace — the
     crash log never sees a Python exception because the kernel reaps
     the process before the interpreter runs anything.
+
+    Termination semantics: ``sys.exit(0)`` here used to race the worker
+    pool — a thread holding ``_stdout_lock`` mid-flush would block the
+    interpreter shutdown indefinitely.  We now log the stack, give the
+    process ``_SHUTDOWN_GRACE_S`` to drain naturally on a background
+    thread, and fall back to ``os._exit(0)`` so a wedged write/flush
+    can never strand the process.
     """
     name = {
         signal.SIGPIPE: "SIGPIPE",
@@ -62,7 +72,29 @@ def _log_signal(signum: int, frame) -> None:
     except Exception:
         pass
     print(f"[gateway-signal] {name}", file=sys.stderr, flush=True)
-    sys.exit(0)
+
+    import threading as _threading
+
+    def _hard_exit() -> None:
+        # If a worker thread is still mid-flush on a half-closed pipe,
+        # ``sys.exit(0)`` would wait forever for it to drop the GIL on
+        # interpreter shutdown.  ``os._exit`` skips atexit handlers but
+        # breaks the deadlock.  The crash log + stderr line above are
+        # the forensic trail.
+        os._exit(0)
+
+    timer = _threading.Timer(_SHUTDOWN_GRACE_S, _hard_exit)
+    timer.daemon = True
+    timer.start()
+
+    try:
+        sys.exit(0)
+    except SystemExit:
+        # Re-raise on the main thread so atexit + finalisers run inside
+        # the grace window.  When we're called from a background thread,
+        # ``sys.exit`` only raises in the caller; the timer above is the
+        # safety net.
+        raise
 
 
 # SIGPIPE: ignore, don't exit. The old SIG_DFL killed the process

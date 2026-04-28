@@ -83,6 +83,58 @@ def test_write_json_broken_pipe(server):
     assert server.write_json({"x": 1}) is False
 
 
+def test_write_json_closed_stream_returns_false(server):
+    """ValueError ('I/O on closed file') used to bubble up; treat as gone."""
+
+    class _Closed:
+        def write(self, _): raise ValueError("I/O operation on closed file")
+        def flush(self): raise ValueError("I/O operation on closed file")
+
+    server._real_stdout = _Closed()
+    assert server.write_json({"x": 1}) is False
+
+
+def test_write_json_oserror_on_flush_returns_false(server):
+    """A flush that raises OSError must not strand the lock or crash."""
+    written = []
+
+    class _FlushFails:
+        def write(self, line): written.append(line)
+        def flush(self): raise OSError("EIO")
+
+    server._real_stdout = _FlushFails()
+    assert server.write_json({"x": 1}) is False
+    assert written and json.loads(written[0]) == {"x": 1}
+
+
+def test_write_json_no_flush_env_skips_flush(server, monkeypatch):
+    """HERMES_TUI_GATEWAY_NO_FLUSH=1 skips flush so a hung peer doesn't block."""
+    import importlib
+
+    monkeypatch.setenv("HERMES_TUI_GATEWAY_NO_FLUSH", "1")
+    transport_mod = importlib.reload(importlib.import_module("tui_gateway.transport"))
+    server_mod = importlib.reload(importlib.import_module("tui_gateway.server"))
+
+    flushed = {"count": 0}
+    written = []
+
+    class _Stream:
+        def write(self, line): written.append(line)
+        def flush(self): flushed["count"] += 1
+
+    stream = _Stream()
+    transport = transport_mod.StdioTransport(lambda: stream, threading.Lock())
+
+    assert transport.write({"x": 1}) is True
+    assert flushed["count"] == 0
+    assert written and json.loads(written[0]) == {"x": 1}
+
+    # Restore module state for sibling tests.
+    monkeypatch.delenv("HERMES_TUI_GATEWAY_NO_FLUSH", raising=False)
+    importlib.reload(transport_mod)
+    importlib.reload(server_mod)
+
+
 # ── _emit ────────────────────────────────────────────────────────────
 
 
