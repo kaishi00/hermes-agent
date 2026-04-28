@@ -2654,3 +2654,39 @@ def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
         )
 
     mock_title.assert_not_called()
+
+
+# ── reload.env ───────────────────────────────────────────────────────
+
+
+def test_reload_env_rpc_calls_hermes_cli_reload_env(monkeypatch):
+    """reload.env mirrors classic CLI's `/reload` — re-reads ~/.hermes/.env
+    into the gateway process and reports the count of vars updated."""
+    calls = {"n": 0}
+
+    def _fake_reload():
+        calls["n"] += 1
+        return 7
+
+    fake = types.SimpleNamespace(reload_env=_fake_reload)
+    with patch.dict(sys.modules, {"hermes_cli.config": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "reload.env", "params": {}}
+        )
+
+    assert resp["result"] == {"updated": 7}
+    assert calls["n"] == 1
+
+
+def test_reload_env_rpc_surfaces_errors(monkeypatch):
+    def _broken():
+        raise RuntimeError("env path locked")
+
+    fake = types.SimpleNamespace(reload_env=_broken)
+    with patch.dict(sys.modules, {"hermes_cli.config": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "reload.env", "params": {}}
+        )
+
+    assert "error" in resp
+    assert "env path locked" in resp["error"]["message"]
