@@ -2751,6 +2751,31 @@ def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
     assert cleanup_calls == []
 
 
+def test_browser_manage_connect_normalizes_bare_host_port(monkeypatch):
+    """Persist a parsed `scheme://host:port` URL so `_get_cdp_override`
+    can normalize it; storing a bare host:port would break subsequent
+    tool calls (Copilot review on #17120)."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=True)
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": "127.0.0.1:9222"},
+            }
+        )
+
+    assert resp["result"]["connected"] is True
+    # Bare host:port got promoted to a full URL with explicit scheme.
+    assert resp["result"]["url"].startswith("http://")
+    assert os.environ["BROWSER_CDP_URL"].startswith("http://")
+
+
 def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
     monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
     cleanup_count = {"n": 0}

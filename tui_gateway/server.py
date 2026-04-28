@@ -4633,31 +4633,33 @@ def _(rid, params: dict) -> dict:
 def _resolve_browser_cdp_url() -> str:
     """Return what the agent's browser tools will actually use right now.
 
-    Mirrors ``tools.browser_tool._get_cdp_override`` so ``/browser status``
-    reports the same answer the next ``browser_navigate`` call sees.  In
-    particular, when only ``browser.cdp_url`` in config.yaml is set (no
-    env), the env-only check used to silently report "not connected".
+    Always defers to ``tools.browser_tool._get_cdp_override`` so the
+    same env-vs-config precedence AND the same WebSocket normalization
+    (``http://host:port`` → ``ws://.../devtools/browser/...``) are
+    applied here as in ``browser_navigate``; otherwise ``/browser
+    status`` could report a different URL than the next tool call
+    actually opens.
     """
-    env_url = os.environ.get("BROWSER_CDP_URL", "").strip()
-    if env_url:
-        return env_url
     try:
         from tools.browser_tool import _get_cdp_override
 
         return _get_cdp_override() or ""
     except Exception:
-        return ""
+        # Fall back to the raw env var if browser_tool can't import
+        # (e.g. optional dep missing) so we still report *something*.
+        return os.environ.get("BROWSER_CDP_URL", "").strip()
 
 
 @method("browser.manage")
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
     if action == "status":
+        resolved_url = _resolve_browser_cdp_url()
         return _ok(
             rid,
             {
-                "connected": bool(_resolve_browser_cdp_url()),
-                "url": _resolve_browser_cdp_url(),
+                "connected": bool(resolved_url),
+                "url": resolved_url,
             },
         )
     if action == "connect":
@@ -4687,6 +4689,13 @@ def _(rid, params: dict) -> dict:
             if not ok:
                 return _err(rid, 5031, f"could not reach browser CDP at {url}")
 
+            # Persist the parsed URL (always a valid scheme://host:port
+            # round-trip via ``parsed.geturl()``) so a user-supplied
+            # bare ``host:port`` gets normalized before it reaches
+            # ``_get_cdp_override`` — the latter requires a full URL to
+            # resolve into a concrete CDP endpoint.
+            normalized = parsed.geturl()
+
             # Order matters: clear any cached browser sessions BEFORE
             # publishing the new env var so an in-flight tool call
             # observing the old supervisor is reaped first, and the
@@ -4694,15 +4703,15 @@ def _(rid, params: dict) -> dict:
             # ordering left a brief window where ``_ensure_cdp_supervisor``
             # could re-attach to the *old* supervisor.
             cleanup_all_browsers()
-            os.environ["BROWSER_CDP_URL"] = url
+            os.environ["BROWSER_CDP_URL"] = normalized
             # Drain any further cached state that could outlive the
             # cleanup pass (CDP supervisor for the default task,
             # cached agent-browser timeouts, etc.) so the next
-            # ``browser_navigate`` definitively reaches ``url``.
+            # ``browser_navigate`` definitively reaches ``normalized``.
             cleanup_all_browsers()
         except Exception as e:
             return _err(rid, 5031, str(e))
-        return _ok(rid, {"connected": True, "url": url})
+        return _ok(rid, {"connected": True, "url": normalized})
     if action == "disconnect":
         try:
             from tools.browser_tool import cleanup_all_browsers
