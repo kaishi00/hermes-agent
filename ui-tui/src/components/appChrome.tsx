@@ -32,28 +32,42 @@ const SPINNER_TICK_MS = 100
 interface IndicatorRender {
   frame: string
   intervalMs: number
+  // When false, FaceTicker hides the rotating verb and just shows the
+  // glyph + duration.  Lets `unicode` stay minimal while the other
+  // styles keep the verb-rotation flavour users associate with the
+  // running… status.
+  showVerb: boolean
 }
 
 const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
   if (style === 'kaomoji') {
-    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS }
+    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
   }
 
   if (style === 'emoji') {
-    return { frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '⚕ ', intervalMs: SPINNER_TICK_MS * 6 }
+    return {
+      frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '⚕ ',
+      intervalMs: SPINNER_TICK_MS * 6,
+      showVerb: true
+    }
   }
 
   if (style === 'ascii') {
-    return { frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|', intervalMs: SPINNER_TICK_MS }
+    return {
+      frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|',
+      intervalMs: SPINNER_TICK_MS,
+      showVerb: true
+    }
   }
 
   // 'unicode' — braille spinner (fixed 1-col).  Authored interval is
   // ~80ms; honour it but bound below at a safe minimum so React
-  // re-renders stay reasonable.
+  // re-renders stay reasonable.  This style is for users who want
+  // the cleanest possible status, so no verb rotation either.
   const spinner = unicodeSpinners.braille
   const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
 
-  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval) }
+  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
 }
 
 function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
@@ -79,12 +93,16 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
     }
   }, [intervalMs])
 
-  const { frame } = renderIndicator(style, tick)
+  const { frame, showVerb } = renderIndicator(style, tick)
   const verb = VERBS[verbTick % VERBS.length] ?? ''
+  const verbSegment = showVerb ? ` ${verb}…` : ''
+  const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
 
   return (
     <Text color={color}>
-      {frame} {verb}…{startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''}
+      {frame}
+      {verbSegment}
+      {durationSegment}
     </Text>
   )
 }
