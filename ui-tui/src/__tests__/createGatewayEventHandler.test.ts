@@ -496,41 +496,82 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
   })
 
-  it('drops stale reasoning/tool events after ctrl-c until the next message starts', () => {
+  it('drops stale reasoning/tool/todos events after ctrl-c until the next message starts', () => {
     // Repro for the discord report: ctrl-c interrupts, but late reasoning/tool
     // events from the still-winding-down agent loop kept populating the UI for
     // ~1s, making it look like the interrupt had been ignored.
-    const appended: Msg[] = []
-    const ctx = buildCtx(appended)
-    ctx.gateway.gw.request = vi.fn(async () => ({ status: 'interrupted' }))
-    const onEvent = createGatewayEventHandler(ctx)
+    //
+    // Fake timers because `interruptTurn` schedules a real setTimeout for
+    // its cooldown — without flushing it inside this test, the timeout
+    // can fire later and mutate uiStore/turnState during unrelated tests
+    // (cross-file flake).
+    vi.useFakeTimers()
 
-    patchUiState({ sid: 'sess-1' })
-    onEvent({ payload: {}, type: 'message.start' } as any)
-    onEvent({ payload: { context: 'pre', name: 'search', tool_id: 't-1' }, type: 'tool.start' } as any)
+    try {
+      const appended: Msg[] = []
+      const ctx = buildCtx(appended)
+      ctx.gateway.gw.request = vi.fn(async () => ({ status: 'interrupted' }))
+      const onEvent = createGatewayEventHandler(ctx)
 
-    turnController.interruptTurn({
-      appendMessage: (msg: Msg) => appended.push(msg),
-      gw: ctx.gateway.gw,
-      sid: 'sess-1',
-      sys: ctx.system.sys
-    })
+      patchUiState({ sid: 'sess-1' })
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({
+        payload: {
+          context: 'pre',
+          name: 'search',
+          todos: [{ content: 'pre-interrupt', id: 'todo-1', status: 'pending' }],
+          tool_id: 't-1'
+        },
+        type: 'tool.start'
+      } as any)
 
-    onEvent({ payload: { text: 'still thinking…' }, type: 'reasoning.delta' } as any)
-    onEvent({ payload: { context: 'post', name: 'browser', tool_id: 't-2' }, type: 'tool.start' } as any)
-    onEvent({ payload: { name: 'browser', preview: 'loading' }, type: 'tool.progress' } as any)
-    onEvent({ payload: { summary: 'done', tool_id: 't-2' }, type: 'tool.complete' } as any)
-    onEvent({ payload: { text: 'late chunk' }, type: 'message.delta' } as any)
+      // Pre-interrupt todos should land in turn state.
+      expect(getTurnState().todos).toEqual([
+        { content: 'pre-interrupt', id: 'todo-1', status: 'pending' }
+      ])
 
-    expect(getTurnState().tools).toEqual([])
-    expect(turnController.reasoningText).toBe('')
-    expect(turnController.bufRef).toBe('')
-    expect(getTurnState().streamPendingTools).toEqual([])
-    expect(getTurnState().streamSegments).toEqual([])
+      turnController.interruptTurn({
+        appendMessage: (msg: Msg) => appended.push(msg),
+        gw: ctx.gateway.gw,
+        sid: 'sess-1',
+        sys: ctx.system.sys
+      })
 
-    onEvent({ payload: {}, type: 'message.start' } as any)
-    onEvent({ payload: { text: 'fresh' }, type: 'reasoning.delta' } as any)
+      onEvent({ payload: { text: 'still thinking…' }, type: 'reasoning.delta' } as any)
+      // Post-interrupt tool.start with a todos payload — must NOT mutate todos.
+      onEvent({
+        payload: {
+          context: 'post',
+          name: 'browser',
+          todos: [{ content: 'late ghost', id: 'todo-ghost', status: 'pending' }],
+          tool_id: 't-2'
+        },
+        type: 'tool.start'
+      } as any)
+      onEvent({ payload: { name: 'browser', preview: 'loading' }, type: 'tool.progress' } as any)
+      onEvent({ payload: { summary: 'done', tool_id: 't-2' }, type: 'tool.complete' } as any)
+      onEvent({ payload: { text: 'late chunk' }, type: 'message.delta' } as any)
 
-    expect(turnController.reasoningText).toBe('fresh')
+      expect(getTurnState().tools).toEqual([])
+      expect(turnController.reasoningText).toBe('')
+      expect(turnController.bufRef).toBe('')
+      expect(getTurnState().streamPendingTools).toEqual([])
+      expect(getTurnState().streamSegments).toEqual([])
+      // Stale todos must not have leaked through; pre-interrupt todos
+      // are also expected to be cleared by the interrupt cycle.
+      expect(getTurnState().todos.find(t => t.content === 'late ghost')).toBeUndefined()
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: 'fresh' }, type: 'reasoning.delta' } as any)
+
+      expect(turnController.reasoningText).toBe('fresh')
+
+      // Drain interrupt cooldown + any pending status timers before
+      // restoring real timers — otherwise vi complains about queued
+      // timers crossing the boundary.
+      vi.runAllTimers()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

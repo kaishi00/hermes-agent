@@ -316,6 +316,10 @@ class TurnController {
   }
 
   recordTodos(value: unknown) {
+    if (this.interrupted) {
+      return
+    }
+
     const todos = parseTodos(value)
 
     if (todos !== null) {
