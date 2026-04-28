@@ -10,7 +10,7 @@ import type {
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 
-import type { StatusBarMode } from './interfaces.js'
+import type { IndicatorStyle, StatusBarMode } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
 
@@ -23,6 +23,18 @@ const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
 
 export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
   raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
+
+const INDICATOR_STYLES = new Set<IndicatorStyle>(['ascii', 'emoji', 'kaomoji', 'unicode'])
+
+export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
+  if (typeof raw !== 'string') {
+    return 'kaomoji'
+  }
+
+  const v = raw.trim().toLowerCase() as IndicatorStyle
+
+  return INDICATOR_STYLES.has(v) ? v : 'kaomoji'
+}
 
 const MTIME_POLL_MS = 5000
 
@@ -46,6 +58,7 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
+    indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
     mouseTracking: d.tui_mouse !== false,
     sections: resolveSections(d.sections),

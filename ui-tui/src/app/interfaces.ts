@@ -27,6 +27,8 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
+export type IndicatorStyle = 'ascii' | 'emoji' | 'kaomoji' | 'unicode'
+
 export interface SelectionApi {
   captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void
   clearSelection: () => void
@@ -94,6 +96,7 @@ export interface UiState {
   sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
+  indicatorStyle: IndicatorStyle
   sid: null | string
   status: string
   statusBar: StatusBarMode

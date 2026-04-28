@@ -62,6 +62,7 @@ export interface ConfigDisplayConfig {
   thinking_mode?: string
   tui_compact?: boolean
   tui_mouse?: boolean
+  tui_status_indicator?: 'ascii' | 'emoji' | 'kaomoji' | 'unicode' | string
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
 }
 
@@ -415,7 +416,11 @@ export type GatewayEvent =
   | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
   | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
-  | { payload?: { cwd?: string; python?: string; stderr_tail?: string }; session_id?: string; type: 'gateway.start_timeout' }
+  | {
+      payload?: { cwd?: string; python?: string; stderr_tail?: string }
+      session_id?: string
+      type: 'gateway.start_timeout'
+    }
   | { payload?: { preview?: string }; session_id?: string; type: 'gateway.protocol_error' }
   | { payload?: { text?: string }; session_id?: string; type: 'reasoning.delta' | 'reasoning.available' }
   | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
