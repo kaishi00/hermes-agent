@@ -59,6 +59,30 @@ describe('detectLightMode', () => {
   it('lets HERMES_TUI_LIGHT=0 override a light COLORFGBG', () => {
     expect(detectLightMode({ COLORFGBG: '0;15', HERMES_TUI_LIGHT: '0' })).toBe(false)
   })
+
+  it('honors HERMES_TUI_THEME=light/dark as a symmetric explicit override', () => {
+    expect(detectLightMode({ HERMES_TUI_THEME: 'light' })).toBe(true)
+    expect(detectLightMode({ HERMES_TUI_THEME: 'dark' })).toBe(false)
+    expect(detectLightMode({ COLORFGBG: '0;15', HERMES_TUI_THEME: 'dark' })).toBe(false)
+    expect(detectLightMode({ COLORFGBG: '15;0', HERMES_TUI_THEME: 'light' })).toBe(true)
+  })
+
+  it('uses HERMES_TUI_BACKGROUND luminance when COLORFGBG is missing', () => {
+    expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#ffffff' })).toBe(true)
+    expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#000000' })).toBe(false)
+    expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#1e1e1e' })).toBe(false)
+    // Three-char hex normalises like CSS.
+    expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#fff' })).toBe(true)
+    // Garbage falls through to the default-dark path.
+    expect(detectLightMode({ HERMES_TUI_BACKGROUND: 'not-a-colour' })).toBe(false)
+  })
+
+  it('treats COLORFGBG as authoritative when present so it dominates fallbacks', () => {
+    // A dark COLORFGBG beats a hypothetical light TERM_PROGRAM allow-list entry.
+    expect(
+      detectLightMode({ COLORFGBG: '15;0', TERM_PROGRAM: 'Apple_Terminal' as unknown as string })
+    ).toBe(false)
+  })
 })
 
 describe('fromSkin', () => {
