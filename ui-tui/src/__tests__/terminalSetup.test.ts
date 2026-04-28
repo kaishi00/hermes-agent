@@ -116,6 +116,33 @@ describe('configureTerminalKeybindings', () => {
     expect(copyFile).not.toHaveBeenCalled() // no backup when not writing
   })
 
+  it('flags a global (when-less) binding on the same key as a conflict', async () => {
+    // A user's keybindings.json `cmd+c` with no `when` clause is global —
+    // it overlaps any context, including our terminal scope. We must NOT
+    // silently add a terminal-scoped cmd+c that would shadow it.
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const readFile = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        {
+          key: 'cmd+c',
+          command: 'myExtension.smartCopy'
+        }
+      ])
+    )
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const copyFile = vi.fn().mockResolvedValue(undefined)
+
+    const result = await configureTerminalKeybindings('vscode', {
+      fileOps: { copyFile, mkdir, readFile, writeFile },
+      homeDir: '/Users/me',
+      platform: 'darwin'
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('cmd+c')
+    expect(writeFile).not.toHaveBeenCalled()
+  })
+
   it('does not flag a disjoint-when binding on the same key as a conflict', async () => {
     // VS Code allows multiple bindings for the same key when their `when`
     // clauses don't overlap. A user's pre-existing cmd+c binding scoped to
