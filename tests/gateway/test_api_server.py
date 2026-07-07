@@ -4038,6 +4038,23 @@ class TestModelRoutesAgentCreation:
         assert captured["model"] == "global/model"
         assert captured["api_key"] == "sk-global"
 
+    def test_raw_session_model_overrides_global_model(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="s1", session_model="claude-sonnet-4-6")
+
+        assert captured["model"] == "claude-sonnet-4-6"
+        assert captured["api_key"] == "sk-global"
+
     def test_session_model_override_beats_route(self, monkeypatch):
         """A user-issued /model on the session must win over static route config."""
         captured = {}

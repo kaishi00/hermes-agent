@@ -1241,6 +1241,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        session_model: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1261,6 +1262,11 @@ class APIServerAdapter(BasePlatformAdapter):
         routing).  When set — and no session ``/model`` override exists for
         this session — its model/provider/api_key/base_url override the
         global defaults for this agent instance only.
+
+        ``session_model`` is the raw model persisted on a native API session
+        row (``POST /api/sessions {"model": ...}``) when that value does not
+        resolve to a ``model_routes`` alias.  Session-chat handlers pass either
+        ``route`` (alias hit) or ``session_model`` (raw model), never both.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -1332,6 +1338,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 "api_server model route skipped: session /model override wins for %s",
                 gateway_session_key or session_id,
             )
+
+        # Native session API model pinning.  POST /api/sessions already
+        # persists a ``model`` field, but the chat handlers previously threw
+        # the session row away before constructing the agent.  If that stored
+        # model is a configured model_routes alias, the handler passes the
+        # resolved ``route`` above so provider credentials/base_url are applied.
+        # If it is a raw model string, apply it here on top of the default
+        # runtime, mirroring the intended "session chooses the model" contract.
+        if session_model and not route and not session_override:
+            model = session_model
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -1882,7 +1898,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
+        session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
         body, err = await self._read_json_body(request)
@@ -1895,12 +1911,16 @@ class APIServerAdapter(BasePlatformAdapter):
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
         history = self._conversation_history_for_session(session_id)
+        stored_model = session.get("model") if isinstance(session, dict) else None
+        stored_route = self._resolve_route(stored_model)
         result, usage = await self._run_agent(
             user_message=user_message,
             conversation_history=history,
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            route=stored_route,
+            session_model=stored_model if stored_model and stored_route is None else None,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -1926,7 +1946,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
+        session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
         body, err = await self._read_json_body(request)
@@ -1938,6 +1958,8 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        stored_model = session.get("model") if isinstance(session, dict) else None
+        stored_route = self._resolve_route(stored_model)
 
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
@@ -1992,6 +2014,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    route=stored_route,
+                    session_model=stored_model if stored_model and stored_route is None else None,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -4031,6 +4055,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        session_model: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4041,6 +4066,9 @@ class APIServerAdapter(BasePlatformAdapter):
         *route* is an optional ``model_routes`` entry (resolved from the
         request's ``model`` field) that overrides the global model/provider
         for this specific request.
+
+        *session_model* is a raw model persisted on a native API session.  It
+        is used only when the persisted value did not resolve to a route.
 
         If *agent_ref* is a one-element list, the AIAgent instance is stored
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
@@ -4067,6 +4095,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    session_model=session_model,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent

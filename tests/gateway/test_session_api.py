@@ -252,6 +252,85 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
 
 
 @pytest.mark.asyncio
+async def test_session_chat_resolves_persisted_model_route(session_db):
+    """A model_routes alias stored on the session must route like /v1 requests.
+
+    POST /api/sessions accepts and persists a ``model`` field. If that value is
+    a configured API-server alias, session chat must pass the resolved route to
+    _run_agent so provider credentials/base_url are switched too. Passing the
+    alias as a raw AIAgent model would run it on the wrong provider.
+    """
+    route = {"model": "step-3.7-flash", "provider": "custom:stepfun"}
+    adapter = APIServerAdapter(
+        PlatformConfig(enabled=True, extra={"key": "sk-test", "model_routes": {"aria-voice": route}})
+    )
+    adapter._session_db = session_db
+    session_id = session_db.create_session("voice-session", "api_server", model="aria-voice")
+
+    mock_run = AsyncMock(return_value=({"final_response": "routed", "session_id": session_id}, {"total_tokens": 3}))
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hello"},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert resp.status == 200, await resp.text()
+
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["route"] == route
+    assert kwargs["session_model"] is None
+
+
+@pytest.mark.asyncio
+async def test_session_chat_threads_persisted_raw_model(auth_adapter, session_db):
+    """A non-alias model persisted on the session still pins the chat turn."""
+    session_id = session_db.create_session("raw-model-session", "api_server", model="claude-sonnet-4-6")
+
+    mock_run = AsyncMock(return_value=({"final_response": "raw", "session_id": session_id}, {"total_tokens": 3}))
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hello"},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert resp.status == 200, await resp.text()
+
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["route"] is None
+    assert kwargs["session_model"] == "claude-sonnet-4-6"
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_resolves_persisted_model_route(session_db):
+    """Streaming native session chat uses the same persisted route as sync chat."""
+    route = {"model": "step-3.7-flash", "provider": "custom:stepfun"}
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"model_routes": {"aria-voice": route}}))
+    adapter._session_db = session_db
+    session_id = session_db.create_session("voice-stream-session", "api_server", model="aria-voice")
+    captured_kwargs = {}
+
+    async def fake_run(**kwargs):
+        captured_kwargs.update(kwargs)
+        kwargs["stream_delta_callback"]("routed")
+        return {"final_response": "routed", "session_id": session_id}, {"total_tokens": 4}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "hello"})
+            assert resp.status == 200, await resp.text()
+            body = await resp.text()
+
+    assert "event: assistant.completed" in body
+    assert captured_kwargs["route"] == route
+    assert captured_kwargs["session_model"] is None
+
+
+@pytest.mark.asyncio
 async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
     session_id = session_db.create_session("image-session", "api_server")
     image_payload = [
