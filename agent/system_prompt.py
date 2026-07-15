@@ -43,6 +43,10 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
 )
+# Security scan + truncation for soul_override normalisation.  These are
+# module-level functions, not patched in tests, so importing directly from
+# prompt_builder is safe (unlike load_soul_md which must resolve through _r).
+from agent.prompt_builder import _scan_context_content, _truncate_content
 from agent.runtime_cwd import resolve_context_cwd
 
 
@@ -156,10 +160,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # file.  Set via ``agent.soul_override`` (e.g. the native session API
         # passes ``POST /api/sessions {"soul": "..."}``).  When present, it
         # fully replaces the identity slot for this session only.
+        # The override is normalised through the same security scanner and
+        # context-size truncation as SOUL.md (prompt_builder.load_soul_md)
+        # so that blocked / oversized content is handled identically.
         _override = getattr(agent, "soul_override", None)
         if _override:
             _override = _override.strip() if isinstance(_override, str) else None
         if _override:
+            _override = _scan_context_content(_override, "soul_override")
+            _override = _truncate_content(
+                _override, "soul_override", context_length=_ctx_len,
+            )
             stable_parts.append(_override)
             _soul_loaded = True
         else:

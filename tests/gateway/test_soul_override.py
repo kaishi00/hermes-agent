@@ -39,6 +39,7 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+    app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
     return app
 
 
@@ -146,3 +147,73 @@ async def test_no_soul_override_when_not_set(adapter):
         )
         assert resp.status == 200
         assert captured.get("soul_override") is None
+
+
+# ── Fork propagation ───────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_fork_propagates_soul_override(adapter):
+    """Forking a session copies soul_override to the child."""
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        # Create source session with a soul override
+        await cli.post("/api/sessions", json={
+            "session_id": "fork-source",
+            "soul": "You are Aria.",
+        })
+
+        # Fork it
+        resp = await cli.post("/api/sessions/fork-source/fork", json={
+            "id": "fork-child",
+        })
+        assert resp.status == 201
+
+        # The forked child must carry the soul_override
+        db_session = adapter._ensure_session_db().get_session("fork-child")
+        assert db_session is not None
+        assert db_session.get("soul_override") == "You are Aria."
+
+
+@pytest.mark.asyncio
+async def test_fork_without_soul_override(adapter):
+    """Forking a session without soul_override yields None in the child."""
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        await cli.post("/api/sessions", json={
+            "session_id": "fork-source-2",
+        })
+
+        resp = await cli.post("/api/sessions/fork-source-2/fork", json={
+            "id": "fork-child-2",
+        })
+        assert resp.status == 201
+
+        db_session = adapter._ensure_session_db().get_session("fork-child-2")
+        assert db_session is not None
+        assert db_session.get("soul_override") is None
+
+
+@pytest.mark.asyncio
+async def test_fork_before_first_chat_propagates_soul(adapter):
+    """A fork made before the source's first chat still carries soul_override.
+
+    This is the edge case from the review: the fork path previously only
+    copied ``model`` and ``system_prompt``, losing the configured identity.
+    """
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        # Create session with soul but never chat on it
+        await cli.post("/api/sessions", json={
+            "session_id": "pre-chat-source",
+            "soul": "You are a pre-chat fork test agent.",
+        })
+
+        # Fork immediately — no chat has happened on the source
+        resp = await cli.post("/api/sessions/pre-chat-source/fork", json={
+            "id": "pre-chat-fork",
+        })
+        assert resp.status == 201
+
+        db_session = adapter._ensure_session_db().get_session("pre-chat-fork")
+        assert db_session is not None
+        assert db_session.get("soul_override") == "You are a pre-chat fork test agent."
