@@ -14,11 +14,11 @@
 ```text
 Hermes Kanban  =  规范的任务生命周期 + 审计追踪
 Worker lane    =  某张已分配卡片的实现执行器
-Reviewer       =  人工或人工代理，负责把关"完成"状态
+Reviewer       =  独立验证者，负责把关"完成"状态（人工或自动化）
 GitHub PR      =  可上游的产物（可选，适用于代码通道）
 ```
 
-Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `blocked` / `done` / `archived`。Worker lane 执行工作，但从不拥有该真实状态；它们所做的一切都通过 `kanban_*` 工具回流至 kanban 内核（对于非 Hermes 外部 worker，则通过 API）。Reviewer 负责把关从"代码变更已写入"到"任务完成"的转换。
+Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `review` → `done` / `blocked` / `archived`。Worker lane 执行工作，但从不拥有该真实状态；它们所做的一切都通过 `kanban_*` 工具回流至 kanban 内核（对于非 Hermes 外部 worker，则通过 API）。Reviewer 负责把关从"代码变更已写入"到"任务完成"的转换，可以是人工审查者，也可以是 worker 调用 `kanban_request_review` 时由调度器生成的自动化审查 agent。
 
 ## 通道需提供的内容
 
@@ -51,27 +51,29 @@ Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `
 每次 claim 必须以以下之一结束：
 
 - `kanban_complete(summary=..., metadata=...)` — 任务成功，状态切换为 `done`。
-- `kanban_block(reason=...)` — 任务等待人工输入，状态切换为 `blocked`。调度器在 `kanban_unblock` 运行时重新生成。
+- `kanban_request_review(summary=..., metadata=...)` — 任务需要独立验证，状态切换为 `review`。调度器生成审查 agent，该 agent 批准（→ `done`）或要求修改（→ `ready`，重新分配给实现者）。
+- `kanban_block(reason=...)` — 任务等待人工输入，状态切换为 `blocked`。调度器在 `kanban_unblock` 运行时重新生成。仅用于需要人工决策的真正阻塞——不用于代码审查。
 - worker 进程退出而未调用任何工具。内核回收该进程并发出 `crashed`（PID 已消亡）、`gave_up`（连续失败断路器触发）或 `timed_out`（超过 max_runtime）。这是失败路径；健康的 worker 不会在此结束。
 
 kanban 内核强制要求每次运行恰好由其中一项终止。既未调用任何终止工具又正常退出的 worker 将被视为崩溃。
 
-## 输出与 review-required 约定
+## 输出与审查生命周期
 
-对于大多数涉及代码变更的任务，worker 完成的那一刻并不意味着真正*完成*——还需要人工审查。kanban 内核不强制执行这一区分（"涉及代码变更的任务"定义模糊，且在每个代码 worker 上强制 block 而非 complete 会破坏不需要审查的流程）。这是叠加在上层的约定：
+对于大多数涉及代码变更的任务，worker 完成的那一刻并不意味着真正*完成*——还需要独立验证。kanban 内核通过一等公民的 `review` 状态支持此流程：
 
-- **使用 block 而非 complete**，`reason` 以 `review-required: ` 为前缀，使仪表板 / `hermes kanban show` 将该行显示为等待审查。
-- **先将结构化元数据写入 `kanban_comment`**，因为 `kanban_block` 只携带人类可读的 `reason`。Comment 是持久的注解通道——所有与审计相关的字段（changed_files、tests_run、diff_path 或 PR url、决策记录）都应放在这里。
-- **Reviewer 批准并解除阻塞**，这将重新生成 worker 并附带 comment 线程用于后续跟进；或通过另一条 comment 要求修改，下一次 worker 运行时将通过 `kanban_show` 的上下文看到这些内容。
+- **提交审查**：使用 `kanban_request_review(summary=..., metadata=...)` 而非 `kanban_complete`。这将任务状态切换为 `review`，释放 claim 锁，并让调度器在干净的会话中生成新的审查 agent。
+- **结构化交接字段**（`summary` 和 `metadata`）以与 `kanban_complete` 相同的方式传递给审查者——将 `changed_files`、`tests_run`、`diff_path` 或 PR url 以及设计决策放在这里，以便审查者知道要检查什么。
+- **审查者批准**：调用 `kanban_complete(summary="Reviewed and approved. ...")`（转换为 `review → done`）；**或要求修改**：调用 `kanban_request_changes(reason="...")`，这会将状态从 `review` 转换为 `ready`，将任务重新分配给原始实现者，并让调度器自动重新生成实现者——无需人工干预。
+- **`kanban_block` 保留给真正需要人工决策的阻塞**（缺少凭据、需求模糊、付费来源）——不用于代码审查。
 
-[`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill 中有 `kanban_complete`（真正终态的任务——拼写修复、文档变更、研究报告）和 `review-required` block 模式的完整示例。
+[`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill 中有 `kanban_complete`（真正终态的任务——拼写修复、文档变更、研究报告）和 `kanban_request_review` 生命周期模式的完整示例。[`sdlc-review`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/sdlc-review/SKILL.md) skill 涵盖审查者侧：导向、验证以及三种裁定（批准、要求修改、升级）。
 
 ## 日志与审计追踪
 
 调度器将每个任务的 worker stdout/stderr 写入 `<board-root>/logs/<task_id>.log`。日志可通过 kanban 元数据进行审计：
 
 - `task_runs` 行携带 `log_path`、退出码（如有）、摘要和元数据。
-- `task_events` 行携带每次状态转换（`promoted`、`claimed`、`heartbeat`、`completed`、`blocked`、`gave_up`、`crashed`、`timed_out`、`reclaimed`、`claim_extended`）。
+- `task_events` 行携带每次状态转换（`promoted`、`claimed`、`heartbeat`、`completed`、`review_requested`、`changes_requested`、`blocked`、`gave_up`、`crashed`、`timed_out`、`reclaimed`、`claim_extended`）。
 - `kanban_show` 同时返回两者，因此 reviewer（或后续 worker）读取任务时无需访问仪表板即可获得完整历史。
 
 仪表板以摘要、元数据块和退出状态徽章渲染运行历史。CLI 用户可运行 `hermes kanban tail <task_id>` 实时跟踪，或运行 `hermes kanban runs <task_id>` 查看历史尝试列表。

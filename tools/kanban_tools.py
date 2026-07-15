@@ -33,6 +33,7 @@ import logging
 import os
 from typing import Any, Optional
 
+from agent.redact import redact_sensitive_text
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 
@@ -656,6 +657,19 @@ def _handle_request_review(args: dict, **kw) -> str:
         return tool_error(
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
+    # Redact secrets before durable persistence — same contract as
+    # kanban_complete / kanban_block / kanban_comment.
+    if summary:
+        summary = redact_sensitive_text(str(summary), force=True)
+    if reason:
+        reason = redact_sensitive_text(str(reason), force=True)
+    if metadata is not None:
+        meta_json = json.dumps(metadata)
+        meta_json = redact_sensitive_text(meta_json, force=True)
+        try:
+            metadata = json.loads(meta_json)
+        except json.JSONDecodeError:
+            pass
     metadata = _stamp_worker_session_metadata(tid, metadata)
     board = args.get("board")
     try:
@@ -698,6 +712,9 @@ def _handle_request_changes(args: dict, **kw) -> str:
     reason = args.get("reason")
     if not reason:
         return tool_error("reason is required (explain what needs to change)")
+    # Redact secrets before durable persistence — same contract as
+    # kanban_complete / kanban_block / kanban_comment.
+    reason = redact_sensitive_text(str(reason), force=True)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
