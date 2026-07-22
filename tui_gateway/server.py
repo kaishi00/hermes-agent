@@ -1820,6 +1820,18 @@ def _(rid, params: dict) -> dict:
         _init_session(sid, target, agent, history, cols=int(params.get("cols", 80)))
     except Exception as e:
         return _err(rid, 5000, f"resume failed: {e}")
+    # Check if the original session still has a turn running.
+    # session.resume creates a new gateway session with running=False, but the
+    # original session may still be executing a long tool call or generating
+    # text. Expose this so clients (mobile apps, dashboard sidebar) can
+    # restore busy/streaming UI state correctly after a reconnection.
+    is_running = any(
+        s.get("running") and s.get("session_key") == target
+        for s in _sessions.values()
+        if s is not _sessions.get(sid)
+    )
+    info = _session_info(agent)
+    info["is_running"] = is_running
     return _ok(
         rid,
         {
@@ -1827,7 +1839,7 @@ def _(rid, params: dict) -> dict:
             "resumed": target,
             "message_count": len(messages),
             "messages": messages,
-            "info": _session_info(agent),
+            "info": info,
         },
     )
 
